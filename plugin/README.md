@@ -68,3 +68,8 @@ readable only by you.
 
 `dist/server.mjs` loads `dist/engine.mjs` beside it and nothing else. Both
 files are readable JavaScript, and the only network calls are SimpleFIN's.
+
+## Licence
+
+MIT; see `LICENSE`. The bundles include code from other open-source
+packages, listed with their licences in `dist/THIRD_PARTY_NOTICES.md`.
