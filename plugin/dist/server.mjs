@@ -21432,10 +21432,7 @@ var StdioServerTransport = class {
   }
 };
 
-// plugin/src/cancelHelp.ts
-import * as engine from "./engine.mjs";
-
-// plugin/src/cancelServices.ts
+// server/cancelServices.ts
 var CANCEL_PAGES_CHECKED = "2026-10-11";
 var CANCEL_SERVICES = [
   {
@@ -21768,7 +21765,7 @@ var CANCEL_SERVICES = [
   }
 ];
 
-// plugin/src/cancelHelp.ts
+// server/cancelHelp.ts
 var BILLING_CHANNELS = [
   { service: "Apple App Store", pattern: /apple\.com\/bill|itunes\.com/i },
   { service: "Google Play", pattern: /\bgoogle\s*\*|google play/i, ownServices: /^(YouTube|Google)\b/ },
@@ -21806,20 +21803,15 @@ var GENERAL_STEPS = [
   "Deleting the app or the account usually does not stop billing.",
   "If there is no way to cancel, the card issuer can usually stop future charges from the merchant: call the number on the card."
 ];
-function cancelHelp(store, input) {
+function cancelHelp(input) {
   const name = input.merchant.trim();
-  const key = engine.merchantKey(name.split("|")[0]);
-  const descriptions = [
-    ...new Set(
-      store.transactions().filter((txn) => engine.merchantKey(txn.merchant) === key).flatMap((txn) => [txn.rawDescription, txn.payee ?? ""]).filter(Boolean)
-    )
-  ];
+  const { key, descriptions } = input;
   const service = matchService([name, key, ...descriptions]);
   const channel = BILLING_CHANNELS.find(
     (candidate) => candidate.service !== service?.service && !(service && candidate.ownServices?.test(service.service)) && descriptions.some((description) => candidate.pattern.test(description))
   );
   const channelService = channel ? CANCEL_SERVICES.find((s) => s.service === channel.service) : void 0;
-  const reminder = "Pocket Pulse does not cancel anything. The user cancels on the service's own page; Claude may open the page with them but never enters payment or login details.";
+  const reminder = "Pocket Pulse does not cancel anything. The user cancels on the service's own page; the agent may open the page with them but never enters payment or login details.";
   if (!service && !channelService) {
     return { merchant: name, found: false, steps: GENERAL_STEPS, reminder };
   }
@@ -21837,6 +21829,18 @@ function cancelHelp(store, input) {
     links_checked: CANCEL_PAGES_CHECKED,
     reminder
   };
+}
+
+// plugin/src/cancelHelp.ts
+import * as engine from "./engine.mjs";
+function cancelHelp2(store, input) {
+  const key = engine.merchantKey(input.merchant.trim().split("|")[0]);
+  const descriptions = [
+    ...new Set(
+      store.transactions().filter((txn) => engine.merchantKey(txn.merchant) === key).flatMap((txn) => [txn.rawDescription, txn.payee ?? ""]).filter(Boolean)
+    )
+  ];
+  return cancelHelp({ merchant: input.merchant, key, descriptions });
 }
 
 // plugin/src/server.ts
@@ -22061,11 +22065,8 @@ function readAccountSet(body) {
 // plugin/src/tools.ts
 import { readFile, stat } from "node:fs/promises";
 import path2 from "node:path";
-import * as engine2 from "./engine.mjs";
-var MAX_FILE_BYTES = 20 * 1024 * 1024;
-var SECTION_LIMIT = 12;
-var EVIDENCE_TRANSACTION_LIMIT = 36;
-var DEFAULT_ACCOUNT = "Unnamed account";
+
+// server/agentReportViews.ts
 var REPORT_SECTIONS = {
   subscriptions: "activeLeaks",
   possible_duplicates: "possibleDuplicates",
@@ -22077,16 +22078,211 @@ var REPORT_SECTIONS = {
   spending_habits: "recentHabits",
   check_these: "needsReview"
 };
-var ToolError = class extends Error {
+var AgentToolError = class extends Error {
 };
+var SECTION_LIMIT = 12;
+var EVIDENCE_TRANSACTION_LIMIT = 36;
 var round = (value) => Math.round(value * 100) / 100;
+function compactFinding(finding) {
+  return {
+    series_key: finding.seriesKey,
+    merchant: finding.merchant,
+    kind: finding.kind,
+    status: finding.status,
+    cadence: finding.cadence ?? null,
+    monthly: finding.monthlyEquivalent,
+    latest_charge: finding.latestAmount,
+    charges: finding.occurrences,
+    first_seen: finding.firstSeen,
+    last_seen: finding.lastSeen,
+    next_expected: finding.expectedNextDate ?? null,
+    ...finding.priceChangeKind && {
+      price_change: {
+        from: finding.previousAmount,
+        to: finding.latestAmount,
+        percent: finding.priceChangePct,
+        on: finding.priceChangedOn,
+        kind: finding.priceChangeKind
+      }
+    },
+    ...finding.amountsVary && { amounts_vary: true },
+    ...finding.duplicateOf && { looks_like: finding.duplicateOf },
+    ...finding.decision && { your_decision: finding.decision },
+    why: finding.evidence.slice(0, 3)
+  };
+}
+function coverageOf(report) {
+  const { coverage } = report;
+  return {
+    from: coverage.startDate,
+    to: coverage.endDate,
+    as_of: coverage.asOfDate,
+    days: coverage.coverageDays,
+    quality: coverage.coverageQuality,
+    freshness: coverage.freshness,
+    accounts: coverage.accountCount,
+    limitations: coverage.limitations
+  };
+}
+function leakReportView(report, input, extra = {}) {
+  const wanted = input.section ? Object.entries(REPORT_SECTIONS).filter(([name]) => name === input.section) : Object.entries(REPORT_SECTIONS);
+  if (wanted.length === 0) {
+    throw new AgentToolError(`Unknown section. Use one of: ${Object.keys(REPORT_SECTIONS).join(", ")}.`);
+  }
+  const sections = {};
+  for (const [name, key] of wanted) {
+    const findings = report.sections[key];
+    if (findings.length === 0) continue;
+    const limit = input.section ? 50 : SECTION_LIMIT;
+    sections[name] = {
+      count: findings.length,
+      findings: findings.slice(0, limit).map(compactFinding),
+      ...findings.length > limit && { more: findings.length - limit }
+    };
+  }
+  return {
+    coverage: coverageOf(report),
+    ...extra,
+    summary: {
+      subscriptions: report.summary.activeCount,
+      subscriptions_monthly: report.summary.estimatedActiveMonthly,
+      possible_duplicates: report.summary.duplicateCount,
+      new_this_period: report.summary.newCount,
+      cost_increases: report.summary.priceCreepCount,
+      bills: report.summary.billCount,
+      bills_monthly: report.summary.estimatedBillsMonthly,
+      ended: report.summary.inactiveCount,
+      spending_habits: report.summary.recentHabitCount
+    },
+    sections,
+    set_aside: report.setAside.map((finding) => ({
+      series_key: finding.seriesKey,
+      merchant: finding.merchant,
+      your_decision: finding.decision
+    }))
+  };
+}
+function listRecurringView(report) {
+  const groups = [
+    ["subscription", report.sections.activeLeaks],
+    ["new", report.sections.newThisPeriod],
+    ["bill", report.sections.bills],
+    ["usage_based", report.sections.usageBased],
+    ["unclassified", report.sections.needsReview]
+  ];
+  const seen = /* @__PURE__ */ new Set();
+  const items = groups.flatMap(
+    ([type, findings]) => findings.filter((finding) => finding.status !== "inactive" && finding.status !== "historical").filter((finding) => !seen.has(finding.id) && seen.add(finding.id)).map((finding) => ({
+      series_key: finding.seriesKey,
+      merchant: finding.merchant,
+      type,
+      cadence: finding.cadence ?? null,
+      monthly: finding.monthlyEquivalent,
+      status: finding.status,
+      ...finding.decision && { your_decision: finding.decision }
+    }))
+  );
+  items.sort((a, b) => b.monthly - a.monthly);
+  const totals = {};
+  for (const item of items) totals[item.type] = round((totals[item.type] ?? 0) + item.monthly);
+  return {
+    coverage: coverageOf(report),
+    monthly_total: round(items.reduce((sum, item) => sum + item.monthly, 0)),
+    monthly_by_type: totals,
+    items
+  };
+}
+var unknownSeries = (seriesKey2) => new AgentToolError(
+  `No finding with series_key "${seriesKey2}". Use a series_key from leak_report or list_recurring.`
+);
+function explainFindingView(report, seriesKey2) {
+  const order = [
+    "activeLeaks",
+    "priceCreep",
+    "possibleDuplicates",
+    "newThisPeriod",
+    "bills",
+    "usageBased",
+    "stoppedLeaks",
+    "needsReview",
+    "recentHabits"
+  ];
+  const sectionNames = Object.fromEntries(
+    Object.entries(REPORT_SECTIONS).map(([name, key]) => [key, name])
+  );
+  const inSections = order.filter(
+    (key) => report.sections[key].some((finding2) => finding2.seriesKey === seriesKey2)
+  );
+  const finding = inSections.length > 0 ? report.sections[inSections[0]].find((f) => f.seriesKey === seriesKey2) : report.setAside.find((f) => f.seriesKey === seriesKey2);
+  if (!finding) throw unknownSeries(seriesKey2);
+  return {
+    ...compactFinding(finding),
+    shown_in: inSections.map((key) => sectionNames[key]),
+    why: finding.evidence,
+    average_charge: finding.averageAmount,
+    total_seen: finding.historicalTotal,
+    ...finding.priceHistory && {
+      price_history: finding.priceHistory.map((period) => ({
+        amount: period.amount,
+        from: period.firstDate,
+        to: period.lastDate,
+        charges: period.charges
+      }))
+    },
+    transactions: finding.transactions.slice(0, EVIDENCE_TRANSACTION_LIMIT).map((txn) => ({
+      date: txn.date,
+      amount: txn.amount,
+      merchant: txn.merchant
+    })),
+    ...finding.transactions.length > EVIDENCE_TRANSACTION_LIMIT && {
+      more_transactions: finding.transactions.length - EVIDENCE_TRANSACTION_LIMIT
+    }
+  };
+}
+var DECISION_STATUSES = {
+  needed: "essential",
+  leak: "leak",
+  hide: "dismissed",
+  undo: null
+};
+var DECISION_EFFECTS = {
+  needed: "No longer treated as a leak. Cost increases are still flagged.",
+  leak: "Treated as a leak in every report.",
+  hide: "Hidden from every report and listed under set_aside, where it can be undone.",
+  undo: "Decision cleared."
+};
+function checkDecision(report, input) {
+  const seriesKey2 = input.series_key.trim();
+  if (!seriesKey2 || seriesKey2.length > 300) throw new AgentToolError("series_key is required.");
+  if (!(input.decision in DECISION_STATUSES)) {
+    throw new AgentToolError(`decision must be one of: ${Object.keys(DECISION_STATUSES).join(", ")}.`);
+  }
+  const decision = input.decision;
+  if (DECISION_STATUSES[decision]) {
+    const known = report && [...Object.values(report.sections).flat(), ...report.setAside].some(
+      (finding) => finding.seriesKey === seriesKey2
+    );
+    if (!known) throw unknownSeries(seriesKey2);
+  }
+  return { seriesKey: seriesKey2, decision };
+}
+var KINDS_BY_FLOW = {
+  outflow: /* @__PURE__ */ new Set(["expense", "transfer"]),
+  inflow: /* @__PURE__ */ new Set(["income", "refund", "transfer"])
+};
+
+// plugin/src/tools.ts
+import * as engine2 from "./engine.mjs";
+var MAX_FILE_BYTES = 20 * 1024 * 1024;
+var DEFAULT_ACCOUNT = "Unnamed account";
+var round2 = (value) => Math.round(value * 100) / 100;
 async function importCsv(store, input) {
   const file = path2.resolve(input.path);
   const info = await stat(file).catch(() => {
-    throw new ToolError(`No file at ${file}.`);
+    throw new AgentToolError(`No file at ${file}.`);
   });
-  if (!info.isFile()) throw new ToolError(`${file} is not a file.`);
-  if (info.size > MAX_FILE_BYTES) throw new ToolError("The file is larger than 20 MB.");
+  if (!info.isFile()) throw new AgentToolError(`${file} is not a file.`);
+  if (info.size > MAX_FILE_BYTES) throw new AgentToolError("The file is larger than 20 MB.");
   const buffer = await readFile(file);
   const text = buffer.toString("utf8");
   const defaultAccount = input.account?.trim().slice(0, 100) || DEFAULT_ACCOUNT;
@@ -22097,7 +22293,7 @@ async function importCsv(store, input) {
   if (engine2.isPocketPulseExport(text)) {
     format = "pocket-pulse-export";
     const read = engine2.readPocketPulseExport(text);
-    if (!read.ok) throw new ToolError(read.error);
+    if (!read.ok) throw new AgentToolError(read.error);
     candidates = read.rows.map((row) => ({
       date: row.date,
       amount: row.amount,
@@ -22116,7 +22312,7 @@ async function importCsv(store, input) {
   } else {
     format = "bank-csv";
     const parsed = await engine2.parseCSV(buffer, path2.basename(file));
-    if (!parsed.ok) throw new ToolError(`Could not read this CSV: ${parsed.error}`);
+    if (!parsed.ok) throw new AgentToolError(`Could not read this CSV: ${parsed.error}`);
     warnings = parsed.warnings;
     const outputs = await engine2.classifyRows(
       parsed.rows.map((row) => ({
@@ -22158,8 +22354,8 @@ async function importCsv(store, input) {
     already_imported: candidates.length - added.length,
     dates: { first: dates[0] ?? null, last: dates[dates.length - 1] ?? null },
     accounts: [...new Set(candidates.map((row) => row.account))],
-    money_in: round(added.filter((t) => t.amount > 0).reduce((sum, t) => sum + t.amount, 0)),
-    money_out: round(added.filter((t) => t.amount < 0).reduce((sum, t) => sum - t.amount, 0)),
+    money_in: round2(added.filter((t) => t.amount > 0).reduce((sum, t) => sum + t.amount, 0)),
+    money_out: round2(added.filter((t) => t.amount < 0).reduce((sum, t) => sum - t.amount, 0)),
     ...directionGuessed.length > 0 && {
       direction_guessed: {
         rows: directionGuessed.length,
@@ -22218,7 +22414,7 @@ function merchantsNeedingCategory(transactions) {
     if (!txn.needsCategory || txn.excluded) continue;
     const entry = byMerchant.get(txn.merchant) ?? { merchant: txn.merchant, charges: 0, total: 0 };
     entry.charges += 1;
-    entry.total = round(entry.total + Math.abs(txn.amount));
+    entry.total = round2(entry.total + Math.abs(txn.amount));
     byMerchant.set(txn.merchant, entry);
   }
   return [...byMerchant.values()].sort((a, b) => b.total - a.total).slice(0, 25);
@@ -22227,7 +22423,7 @@ function buildReport(store, asOf2) {
   const transactions = store.transactions();
   if (transactions.length === 0) return null;
   if (asOf2 !== void 0 && !/^\d{4}-\d{2}-\d{2}$/.test(asOf2)) {
-    throw new ToolError("as_of must be a date like 2026-08-31.");
+    throw new AgentToolError("as_of must be a date like 2026-08-31.");
   }
   const accounts = [...new Set(transactions.map((txn) => txn.account))];
   const rows = transactions.map((txn) => ({
@@ -22253,199 +22449,30 @@ var NO_DATA = {
   empty: true,
   message: "No transactions yet. Import a bank or card CSV, or a Pocket Pulse ledger export, with import_csv."
 };
-function compactFinding(finding) {
-  return {
-    series_key: finding.seriesKey,
-    merchant: finding.merchant,
-    kind: finding.kind,
-    status: finding.status,
-    cadence: finding.cadence ?? null,
-    monthly: finding.monthlyEquivalent,
-    latest_charge: finding.latestAmount,
-    charges: finding.occurrences,
-    first_seen: finding.firstSeen,
-    last_seen: finding.lastSeen,
-    next_expected: finding.expectedNextDate ?? null,
-    ...finding.priceChangeKind && {
-      price_change: {
-        from: finding.previousAmount,
-        to: finding.latestAmount,
-        percent: finding.priceChangePct,
-        on: finding.priceChangedOn,
-        kind: finding.priceChangeKind
-      }
-    },
-    ...finding.amountsVary && { amounts_vary: true },
-    ...finding.duplicateOf && { looks_like: finding.duplicateOf },
-    ...finding.decision && { your_decision: finding.decision },
-    why: finding.evidence.slice(0, 3)
-  };
-}
 function simplefinStatus(store) {
   const connection = store.simplefin();
   if (!connection) return {};
   const lastSyncedAt = store.simplefinSync().lastSyncedAt ?? null;
   return { simplefin: { connected: true, last_synced_at: lastSyncedAt } };
 }
-function coverageOf(report) {
-  const { coverage } = report;
-  return {
-    from: coverage.startDate,
-    to: coverage.endDate,
-    as_of: coverage.asOfDate,
-    days: coverage.coverageDays,
-    quality: coverage.coverageQuality,
-    freshness: coverage.freshness,
-    accounts: coverage.accountCount,
-    limitations: coverage.limitations
-  };
-}
 function leakReport(store, input) {
   const report = buildReport(store, input.as_of);
   if (!report) return NO_DATA;
-  const wanted = input.section ? Object.entries(REPORT_SECTIONS).filter(([name]) => name === input.section) : Object.entries(REPORT_SECTIONS);
-  if (wanted.length === 0) {
-    throw new ToolError(`Unknown section. Use one of: ${Object.keys(REPORT_SECTIONS).join(", ")}.`);
-  }
-  const sections = {};
-  for (const [name, key] of wanted) {
-    const findings = report.sections[key];
-    if (findings.length === 0) continue;
-    const limit = input.section ? 50 : SECTION_LIMIT;
-    sections[name] = {
-      count: findings.length,
-      findings: findings.slice(0, limit).map(compactFinding),
-      ...findings.length > limit && { more: findings.length - limit }
-    };
-  }
-  return {
-    coverage: coverageOf(report),
-    ...simplefinStatus(store),
-    summary: {
-      subscriptions: report.summary.activeCount,
-      subscriptions_monthly: report.summary.estimatedActiveMonthly,
-      possible_duplicates: report.summary.duplicateCount,
-      new_this_period: report.summary.newCount,
-      cost_increases: report.summary.priceCreepCount,
-      bills: report.summary.billCount,
-      bills_monthly: report.summary.estimatedBillsMonthly,
-      ended: report.summary.inactiveCount,
-      spending_habits: report.summary.recentHabitCount
-    },
-    sections,
-    set_aside: report.setAside.map((finding) => ({
-      series_key: finding.seriesKey,
-      merchant: finding.merchant,
-      your_decision: finding.decision
-    }))
-  };
+  return leakReportView(report, input, simplefinStatus(store));
 }
 function listRecurring(store, input) {
   const report = buildReport(store, input.as_of);
   if (!report) return NO_DATA;
-  const groups = [
-    ["subscription", report.sections.activeLeaks],
-    ["new", report.sections.newThisPeriod],
-    ["bill", report.sections.bills],
-    ["usage_based", report.sections.usageBased],
-    ["unclassified", report.sections.needsReview]
-  ];
-  const seen = /* @__PURE__ */ new Set();
-  const items = groups.flatMap(
-    ([type, findings]) => findings.filter((finding) => finding.status !== "inactive" && finding.status !== "historical").filter((finding) => !seen.has(finding.id) && seen.add(finding.id)).map((finding) => ({
-      series_key: finding.seriesKey,
-      merchant: finding.merchant,
-      type,
-      cadence: finding.cadence ?? null,
-      monthly: finding.monthlyEquivalent,
-      status: finding.status,
-      ...finding.decision && { your_decision: finding.decision }
-    }))
-  );
-  items.sort((a, b) => b.monthly - a.monthly);
-  const totals = {};
-  for (const item of items) totals[item.type] = round((totals[item.type] ?? 0) + item.monthly);
-  return {
-    coverage: coverageOf(report),
-    monthly_total: round(items.reduce((sum, item) => sum + item.monthly, 0)),
-    monthly_by_type: totals,
-    items
-  };
+  return listRecurringView(report);
 }
 function explainFinding(store, input) {
   const report = buildReport(store, input.as_of);
   if (!report) return NO_DATA;
-  const order = [
-    "activeLeaks",
-    "priceCreep",
-    "possibleDuplicates",
-    "newThisPeriod",
-    "bills",
-    "usageBased",
-    "stoppedLeaks",
-    "needsReview",
-    "recentHabits"
-  ];
-  const sectionNames = Object.fromEntries(
-    Object.entries(REPORT_SECTIONS).map(([name, key]) => [key, name])
-  );
-  const inSections = order.filter(
-    (key) => report.sections[key].some((finding2) => finding2.seriesKey === input.series_key)
-  );
-  const finding = inSections.length > 0 ? report.sections[inSections[0]].find((f) => f.seriesKey === input.series_key) : report.setAside.find((f) => f.seriesKey === input.series_key);
-  if (!finding) {
-    throw new ToolError(
-      `No finding with series_key "${input.series_key}". Use a series_key from leak_report or list_recurring.`
-    );
-  }
-  return {
-    ...compactFinding(finding),
-    shown_in: inSections.map((key) => sectionNames[key]),
-    why: finding.evidence,
-    average_charge: finding.averageAmount,
-    total_seen: finding.historicalTotal,
-    ...finding.priceHistory && {
-      price_history: finding.priceHistory.map((period) => ({
-        amount: period.amount,
-        from: period.firstDate,
-        to: period.lastDate,
-        charges: period.charges
-      }))
-    },
-    transactions: finding.transactions.slice(0, EVIDENCE_TRANSACTION_LIMIT).map((txn) => ({
-      date: txn.date,
-      amount: txn.amount,
-      merchant: txn.merchant
-    })),
-    ...finding.transactions.length > EVIDENCE_TRANSACTION_LIMIT && {
-      more_transactions: finding.transactions.length - EVIDENCE_TRANSACTION_LIMIT
-    }
-  };
+  return explainFindingView(report, input.series_key);
 }
-var DECISIONS = {
-  needed: "essential",
-  leak: "leak",
-  hide: "dismissed",
-  undo: null
-};
 function setDecision(store, input) {
-  const seriesKey2 = input.series_key.trim();
-  if (!seriesKey2 || seriesKey2.length > 300) throw new ToolError("series_key is required.");
-  if (!(input.decision in DECISIONS)) {
-    throw new ToolError(`decision must be one of: ${Object.keys(DECISIONS).join(", ")}.`);
-  }
-  const status = DECISIONS[input.decision];
-  if (status) {
-    const report = buildReport(store);
-    const known = report && [...Object.values(report.sections).flat(), ...report.setAside].some(
-      (finding) => finding.seriesKey === seriesKey2
-    );
-    if (!known) {
-      throw new ToolError(
-        `No finding with series_key "${seriesKey2}". Use a series_key from leak_report or list_recurring.`
-      );
-    }
-  }
+  const { seriesKey: seriesKey2, decision } = checkDecision(buildReport(store), input);
+  const status = DECISION_STATUSES[decision];
   store.saveDecision(
     seriesKey2,
     status ? {
@@ -22454,34 +22481,21 @@ function setDecision(store, input) {
       decidedAt: (/* @__PURE__ */ new Date()).toISOString()
     } : null
   );
-  return {
-    series_key: seriesKey2,
-    decision: input.decision,
-    effect: {
-      needed: "No longer treated as a leak. Cost increases are still flagged.",
-      leak: "Treated as a leak in every report.",
-      hide: "Hidden from every report and listed under set_aside, where it can be undone.",
-      undo: "Decision cleared."
-    }[input.decision]
-  };
+  return { series_key: seriesKey2, decision, effect: DECISION_EFFECTS[decision] };
 }
-var CLASSES_BY_FLOW = {
-  outflow: /* @__PURE__ */ new Set(["expense", "transfer"]),
-  inflow: /* @__PURE__ */ new Set(["income", "refund", "transfer"])
-};
 function categorizeMerchant(store, input) {
   const merchantKey3 = engine2.merchantKey(input.merchant);
-  if (!merchantKey3) throw new ToolError("merchant is required.");
+  if (!merchantKey3) throw new AgentToolError("merchant is required.");
   if (!engine2.CATEGORIES.includes(input.category)) {
-    throw new ToolError(`category must be one of: ${engine2.CATEGORIES.join(", ")}.`);
+    throw new AgentToolError(`category must be one of: ${engine2.CATEGORIES.join(", ")}.`);
   }
   if (input.kind && !["expense", "income", "transfer", "refund"].includes(input.kind)) {
-    throw new ToolError("kind must be expense, income, transfer or refund.");
+    throw new AgentToolError("kind must be expense, income, transfer or refund.");
   }
   const kind = input.kind;
   const fromMerchant = store.transactions().filter((txn) => engine2.merchantKey(txn.merchant) === merchantKey3);
-  if (kind && fromMerchant.length > 0 && !fromMerchant.some((txn) => CLASSES_BY_FLOW[txn.flowType].has(kind))) {
-    throw new ToolError(
+  if (kind && fromMerchant.length > 0 && !fromMerchant.some((txn) => KINDS_BY_FLOW[txn.flowType].has(kind))) {
+    throw new AgentToolError(
       `"${kind}" does not fit this merchant: its transactions are money ${fromMerchant[0].flowType === "outflow" ? "out" : "in"}.`
     );
   }
@@ -22495,7 +22509,7 @@ function categorizeMerchant(store, input) {
   const transactions = store.transactions().map((txn) => {
     if (engine2.merchantKey(txn.merchant) !== merchantKey3) return txn;
     updated += 1;
-    const kindFits = !input.kind || CLASSES_BY_FLOW[txn.flowType].has(input.kind);
+    const kindFits = !input.kind || KINDS_BY_FLOW[txn.flowType].has(input.kind);
     if (!kindFits) kindSkipped += 1;
     return {
       ...txn,
@@ -22526,19 +22540,19 @@ var MAX_REQUESTS_PER_DAY = 20;
 var addDays = (date3, days) => new Date(Date.parse(`${date3}T00:00:00Z`) + days * 864e5).toISOString().slice(0, 10);
 var localDate = (now) => `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 function asToolError(error2) {
-  if (error2 instanceof SimplefinError) throw new ToolError(error2.message);
+  if (error2 instanceof SimplefinError) throw new AgentToolError(error2.message);
   if (error2 instanceof TypeError && /fetch failed/i.test(error2.message)) {
-    throw new ToolError("Could not reach SimpleFIN. Check the internet connection and try again.");
+    throw new AgentToolError("Could not reach SimpleFIN. Check the internet connection and try again.");
   }
   throw error2;
 }
 async function connectSimplefin(store, input, deps = {}) {
   const file = path3.resolve(input.token_file);
   const info = await stat2(file).catch(() => {
-    throw new ToolError(`No file at ${file}.`);
+    throw new AgentToolError(`No file at ${file}.`);
   });
   if (!info.isFile() || info.size > 4096) {
-    throw new ToolError(`${file} should be a small text file holding only the SimpleFIN setup token.`);
+    throw new AgentToolError(`${file} should be a small text file holding only the SimpleFIN setup token.`);
   }
   let accessUrl;
   let fromSetupToken;
@@ -22556,14 +22570,14 @@ async function connectSimplefin(store, input, deps = {}) {
   try {
     return { connected: true, ...await syncSimplefin(store, deps), token_file_note: tokenFileNote };
   } catch (error2) {
-    if (!(error2 instanceof ToolError)) throw error2;
+    if (!(error2 instanceof AgentToolError)) throw error2;
     return { connected: true, synced: false, sync_error: error2.message, token_file_note: tokenFileNote };
   }
 }
 async function syncSimplefin(store, deps = {}) {
   const connection = store.simplefin();
   if (!connection) {
-    throw new ToolError("SimpleFIN is not connected. Connect it with connect_simplefin first.");
+    throw new AgentToolError("SimpleFIN is not connected. Connect it with connect_simplefin first.");
   }
   const now = (deps.now ?? (() => /* @__PURE__ */ new Date()))();
   const today = localDate(now);
@@ -22585,7 +22599,7 @@ async function syncSimplefin(store, deps = {}) {
   try {
     for (let windowEnd = end; windowEnd > start; windowEnd = addDays(windowEnd, -WINDOW_DAYS)) {
       if (requests.length >= MAX_REQUESTS_PER_DAY) {
-        throw new ToolError("Pocket Pulse has made its daily allowance of SimpleFIN requests. Try again tomorrow.");
+        throw new AgentToolError("Pocket Pulse has made its daily allowance of SimpleFIN requests. Try again tomorrow.");
       }
       const windowStart = [addDays(windowEnd, -WINDOW_DAYS), start].sort().at(-1);
       requests.push(now.toISOString());
@@ -22707,7 +22721,7 @@ function disconnectSimplefin(store) {
 }
 
 // plugin/src/server.ts
-var VERSION = "0.3.1";
+var VERSION = "0.3.2";
 var INSTRUCTIONS = `Pocket Pulse finds subscriptions, bills, cost increases and spending habits in the user's bank and card transactions. It runs on the user's computer and keeps its data in a local folder. Its only network calls go to SimpleFIN, and only after the user connects it.
 
 Start with leak_report. If SimpleFIN is connected, call sync_simplefin first. If there is no data, recommend the ledger export from a free pocket-pulse.com account (Ledger, then Export CSV), which keeps the user's categories and corrections; a bank or card CSV export or a SimpleFIN connection also work. Import files with import_csv. Never ask the user to paste a SimpleFIN token or access URL into the conversation: they save it to a file and you pass the file's path. Every amount and date comes from these tools: never estimate or invent figures. Money out is negative.`;
@@ -22718,7 +22732,7 @@ async function respond(run) {
     const result = await run();
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   } catch (error2) {
-    if (error2 instanceof ToolError) {
+    if (error2 instanceof AgentToolError) {
       return { content: [{ type: "text", text: error2.message }], isError: true };
     }
     console.error(error2);
@@ -22821,7 +22835,7 @@ function createServer(store) {
       },
       annotations: { ...local, readOnlyHint: true }
     },
-    (input) => respond(() => cancelHelp(store, input))
+    (input) => respond(() => cancelHelp2(store, input))
   );
   server.registerTool(
     "connect_simplefin",
