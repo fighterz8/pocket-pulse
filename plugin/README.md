@@ -1,32 +1,53 @@
 # Pocket Pulse plugin
 
 Finds subscriptions, cost increases, bills and spending habits in your bank
-and card transactions, from CSV exports or SimpleFIN, inside Claude Code. Run `/pocket-pulse:money-review` for
-a guided review.
+and card transactions, inside your AI agent. It works best with the ledger
+export from a free [pocket-pulse.com](https://pocket-pulse.com) account,
+which keeps your categories and corrections. It also reads bank and card
+CSVs, and can connect through SimpleFIN.
+
+It is a standard MCP server, so it works with agents that support MCP, such
+as Claude Code, Claude Desktop, Cursor, VS Code, Codex CLI and Gemini CLI.
+It needs Node 20 or later.
+
+## Claude Code
 
 ```
 /plugin install pocket-pulse --marketplace fighterz8/pocket-pulse
 ```
 
 From a shell: `claude plugin install pocket-pulse --marketplace fighterz8/pocket-pulse`.
-It needs Node 20 or later.
+Then run `/pocket-pulse:money-review` for a guided review.
+
+## Other AI agents
+
+1. Download it: `git clone https://github.com/fighterz8/pocket-pulse`
+2. Add an MCP server to your agent's settings that runs Node with the
+   downloaded `plugin/dist/server.mjs`:
+
+   ```json
+   { "command": "node", "args": ["/full/path/to/pocket-pulse/plugin/dist/server.mjs"] }
+   ```
+
+3. Ask your agent to review your Pocket Pulse ledger export, or a bank CSV.
 
 ## Privacy
 
 Pocket Pulse runs on your computer and keeps your transactions in a local
 folder. It goes online only to fetch your transactions from SimpleFIN, and
 only if you connect it. What it finds (merchants, amounts and dates) becomes
-part of your conversation with Claude, like anything else you share there.
+part of your conversation with your AI agent, like anything else you share
+there.
 
 SimpleFIN setup tokens are read from a file you save, never from the
 conversation. The access they unlock is stored in the data folder and never
-shown to Claude.
+shown to your agent.
 
-The folder is Claude Code's data folder for the plugin
+Most agents keep it in `~/.pocketpulse/`, or the folder named by
+`POCKET_PULSE_DATA`. In Claude Code it is the plugin's data folder
 (`~/.claude/plugins/data/pocket-pulse-pocket-pulse/`), which Claude Code
-deletes when the plugin is uninstalled. Other MCP clients use
-`~/.pocketpulse/`, or the folder named by `POCKET_PULSE_DATA`. The folder and
-its files are readable only by you.
+deletes when the plugin is uninstalled. The folder and its files are
+readable only by you.
 
 ## Tools
 
@@ -43,13 +64,7 @@ its files are readable only by you.
 | `sync_simplefin` | Fetches new transactions from SimpleFIN, at most once a day. |
 | `disconnect_simplefin` | Deletes the stored SimpleFIN access; imported transactions stay. |
 
-## Other MCP clients
+## What runs
 
-The server needs only Node 20 or later: `dist/server.mjs` loads
-`dist/engine.mjs` beside it and nothing else. Both files are readable
-JavaScript, and the only network calls are SimpleFIN's. Point any MCP
-client at it:
-
-```json
-{ "command": "node", "args": ["/path/to/plugin/dist/server.mjs"] }
-```
+`dist/server.mjs` loads `dist/engine.mjs` beside it and nothing else. Both
+files are readable JavaScript, and the only network calls are SimpleFIN's.
