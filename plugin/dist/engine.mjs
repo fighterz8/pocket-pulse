@@ -381,7 +381,6 @@ var TRANSFER_KW = [
   "venmo",
   "cash app",
   "cashapp",
-  "wire",
   "paypal",
   "apple pay",
   "google pay",
@@ -399,6 +398,7 @@ var TRANSFER_KW = [
   "mobile check deposit",
   "remote deposit"
 ];
+var WIRE_WORD = /\bwire\b/;
 var P2P_DEBIT_EXEMPT = /* @__PURE__ */ new Set(["cash app", "cashapp", "venmo", "zelle"]);
 var CARD_ISSUER = /\b(?:amex|american express|capital one|chase|citi|citibank|discover|barclays|barclaycard|synchrony|apple card|goldman sachs|credit one|bank of america|wells fargo card)\b/;
 var CARD_WORD = /\bcredit (?:card|crd)\b|\bcrd\b|\bcard (?:pmt|pymt|payment)\b|\bcc (?:pmt|payment)\b/;
@@ -498,7 +498,8 @@ var CATEGORY_RULES = [
     "wireless bill",
     "trash",
     "recycling",
-    "propane"
+    "propane",
+    "solar"
   ] },
   { category: "travel", confidence: 0.85, keywords: ["airline", "airways", "hotel"] },
   { category: "gas", confidence: 0.85, keywords: ["gas station", "fuel", "gasoline", "petrol"] },
@@ -757,7 +758,7 @@ function classifyTransaction(rawDescription, amount) {
   let classEvidence = "heuristic";
   let matchedRule = false;
   let labelConfidence = 0.92;
-  if (TRANSFER_KW.some((kw) => lower.includes(kw))) {
+  if (TRANSFER_KW.some((kw) => lower.includes(kw)) || WIRE_WORD.test(lower)) {
     const exempt = isDebit && [...P2P_DEBIT_EXEMPT].some((kw) => lower.includes(kw));
     if (!exempt) {
       tc = "transfer";
@@ -904,6 +905,12 @@ var MONTHLY_FACTOR = {
   annual: 1 / 12
 };
 var MAX_RECURRENCE_KEY_INPUT_LENGTH = 200;
+var AUTOPAY_SUFFIX = /\s+(?:sure\s*pay|auto\s*-?\s*pay|e-?pay|web\s*pay|recurring\s+(?:pmt|pymt|payment))\s*$/i;
+var PLAN_TIER_SUFFIX = /(?:\s+(?:plus|premium|pro|basic|standard|family|individual|duo|student|plan|membership|subscription))+$/;
+function withoutPlanTier(key) {
+  const stripped = key.replace(PLAN_TIER_SUFFIX, "").trim();
+  return stripped || key;
+}
 function recurrenceKey(merchant) {
   let k = merchant.slice(0, MAX_RECURRENCE_KEY_INPUT_LENGTH).toLowerCase().trim();
   k = k.replace(/^[\s\-–—_*#]+/, "");
@@ -923,10 +930,13 @@ function recurrenceKey(merchant) {
     ""
   );
   k = k.replace(/^payment\s+(to\s+)?/i, "");
+  k = k.replace(/\s+(?:[x*]{2,}\d{2,}|#\d+)\s*$/i, "");
+  k = k.replace(AUTOPAY_SUFFIX, "");
   k = k.replace(/\s+(https?:\S+|http\S*|\w+\.\w{2,4})\s*.*/i, "");
   k = k.replace(/\s+(ca|null|us|co)\s*$/i, "");
   k = k.replace(/\s*[#*]\s*\d+\s*$/, "");
   k = k.replace(/\s+\d{4,}\s*$/, "");
+  k = k.replace(AUTOPAY_SUFFIX, "");
   const ALIASES = [
     [/\bopenai\b|\bchatgpt\b/, "openai"],
     [/\banthropic\b|\bclaude\.ai\b|\bclaude ai\b/, "anthropic"],
@@ -1233,13 +1243,21 @@ async function runClassifyPipeline(rows, opts, { store, aiClassify }) {
   );
   if (globalEligible.length > 0) {
     try {
-      const globalKeys = globalEligible.map((r) => recurrenceKey(r.merchant)).filter(Boolean);
+      const globalKeys = [
+        ...new Set(
+          globalEligible.flatMap((r) => {
+            const key = recurrenceKey(r.merchant);
+            return key ? [key, withoutPlanTier(key)] : [];
+          })
+        )
+      ];
       if (globalKeys.length > 0) {
         const globalHits = await store.getGlobalMerchantClassifications(globalKeys);
         const hitKeys = [];
         for (const row of globalEligible) {
-          const key = recurrenceKey(row.merchant);
-          if (!key) continue;
+          const merchantKey = recurrenceKey(row.merchant);
+          if (!merchantKey) continue;
+          const key = globalHits.has(merchantKey) ? merchantKey : withoutPlanTier(merchantKey);
           const hit = globalHits.get(key);
           if (!hit) continue;
           applyDirectionalOverride(row, hit.transactionClass, hit.category);
@@ -4498,9 +4516,9 @@ var SUBSCRIPTION_MERCHANT_PATTERNS = [
   /\bpeloton\b/i
 ];
 function detectSubscriptionLike(merchant, category, isRecurring, amountVariance, avgAmount) {
-  if (SUBSCRIPTION_LIKE_CATEGORIES.has(category)) return true;
-  if (isRecurring && avgAmount > 0 && amountVariance < avgAmount * 0.2)
-    return true;
+  const steady = avgAmount > 0 && amountVariance < avgAmount * 0.2;
+  if (SUBSCRIPTION_LIKE_CATEGORIES.has(category) && steady) return true;
+  if (isRecurring && steady) return true;
   return SUBSCRIPTION_MERCHANT_PATTERNS.some((p) => p.test(merchant));
 }
 function roundCurrency(value) {
@@ -4931,8 +4949,22 @@ function confidenceFor(occurrences, cadence, status) {
   if (occurrences >= 3 || cadence === "annual") return "medium";
   return "low";
 }
+function seriesCategory(transactions) {
+  const latest = transactions[transactions.length - 1].category;
+  if (latest !== "other") return latest;
+  const counts = /* @__PURE__ */ new Map();
+  for (const txn of transactions) {
+    if (txn.category !== "other") counts.set(txn.category, (counts.get(txn.category) ?? 0) + 1);
+  }
+  let best = latest;
+  let bestCount = 0;
+  for (const [category, count] of counts) {
+    if (count > bestCount) [best, bestCount] = [category, count];
+  }
+  return best;
+}
 function kindFor(transactions) {
-  const category = transactions[transactions.length - 1].category;
+  const category = seriesCategory(transactions);
   if (AUTO_ESSENTIAL_CATEGORIES.has(category)) return "bill";
   if (ACTIONABLE_SUBSCRIPTION_CATEGORIES.has(category)) {
     return "subscription";
@@ -5089,9 +5121,7 @@ function findSeries(transactions, options = {}) {
 }
 function buildMerchantFindings(group, options) {
   if (group.transactions.length < 2 || !shouldConsiderRecurring(group)) return [];
-  const isBill = AUTO_ESSENTIAL_CATEGORIES.has(
-    group.transactions[group.transactions.length - 1].category
-  );
+  const isBill = AUTO_ESSENTIAL_CATEGORIES.has(seriesCategory(group.transactions));
   const series = findSeries(group.transactions, { preferWhole: isBill }).sort(
     (a, b) => a.transactions[0].date.localeCompare(b.transactions[0].date)
   );
@@ -5283,58 +5313,64 @@ function detectNewSubscriptions(groups, options) {
   if (!options.historyStart) return [];
   const historyStart = options.historyStart;
   return groups.flatMap((group) => {
-    const txns = group.transactions;
-    if (options.recurringKeys.has(group.merchantKey) || txns.length > 3) return [];
-    const first = txns[0];
-    const latest = txns[txns.length - 1];
-    if (daysBetween(first.date, options.asOfDate) > NEW_SUBSCRIPTION_WINDOW_DAYS) return [];
-    const priorHistory = daysBetween(historyStart, first.date);
+    const all = group.transactions;
+    if (options.recurringKeys.has(group.merchantKey) || all.length > 3) return [];
+    const merchantFirst = all[0];
+    if (daysBetween(merchantFirst.date, options.asOfDate) > NEW_SUBSCRIPTION_WINDOW_DAYS) return [];
+    const priorHistory = daysBetween(historyStart, merchantFirst.date);
     if (priorHistory < NEW_SUBSCRIPTION_PRIOR_HISTORY_DAYS) return [];
-    const knownSubscription = txns.some((txn) => txn.recurrenceType === "recurring");
-    if (!knownSubscription && !ACTIONABLE_SUBSCRIPTION_CATEGORIES.has(latest.category)) {
-      return [];
-    }
-    const previous = txns.length >= 2 ? txns[txns.length - 2] : void 0;
-    const monthlyGap = previous !== void 0 && Math.abs(daysBetween(previous.date, latest.date) - CADENCE_TARGET_DAYS.monthly) <= GAP_TOLERANCE_DAYS.monthly;
-    const trial = txns.length >= 2 && first.amount <= TRIAL_MAX_AMOUNT && latest.amount >= first.amount * 5;
-    if (txns.length === 1 ? !knownSubscription : !(monthlyGap || trial)) return [];
-    const amounts = txns.map((txn) => txn.amount);
-    const lead = trial ? `Started with ${formatMoney(first.amount)} on ${first.date}, then ${formatMoney(latest.amount)} on ${latest.date}: a trial that became a paid plan.` : monthlyGap ? `First charged ${formatMoney(first.amount)} on ${first.date}, then again a month later.` : `First charge from this subscription service: ${formatMoney(latest.amount)} on ${latest.date}.`;
-    return [
-      {
-        id: `new:${group.merchantKey}:${first.date}`,
-        merchantKey: group.merchantKey,
-        seriesKey: group.merchantKey,
-        merchant: displayMerchantName(latest.merchant),
-        status: "active",
-        kind: "subscription",
-        firstSeen: first.date,
-        lastSeen: latest.date,
-        expectedNextDate: addDays(latest.date, CADENCE_TARGET_DAYS.monthly),
-        ...monthlyGap || trial ? { cadence: "monthly" } : {},
-        occurrences: txns.length,
-        averageAmount: roundMoney(amounts.reduce((sum, amount) => sum + amount, 0) / amounts.length),
-        latestAmount: roundMoney(latest.amount),
-        monthlyEquivalent: roundMoney(latest.amount),
-        historicalTotal: roundMoney(amounts.reduce((sum, amount) => sum + amount, 0)),
-        confidence: monthlyGap || trial ? "medium" : "low",
-        evidence: [
-          lead,
-          `No earlier charges from this merchant in the ${priorHistory} days of history before it.`,
-          `If it renews monthly, it costs about ${formatMoney(latest.amount * 12)} a year.`
-        ],
-        transactions: evidenceTransactions(txns),
-        ledgerQuery: {
-          merchant: group.merchantKey,
-          startDate: first.date,
-          endDate: latest.date
-        }
+    const trial = all.length >= 2 && merchantFirst.amount <= TRIAL_MAX_AMOUNT && all[all.length - 1].amount >= merchantFirst.amount * 5;
+    const plans = trial ? [all] : amountClusters(all).sort((a, b) => a[0].date.localeCompare(b[0].date));
+    return plans.flatMap((txns, index) => {
+      const seriesKey = index === 0 ? group.merchantKey : `${group.merchantKey}|${index + 1}`;
+      const first = txns[0];
+      const latest = txns[txns.length - 1];
+      const knownSubscription = txns.some((txn) => txn.recurrenceType === "recurring");
+      if (!knownSubscription && !ACTIONABLE_SUBSCRIPTION_CATEGORIES.has(latest.category)) {
+        return [];
       }
-    ];
+      const previous = txns.length >= 2 ? txns[txns.length - 2] : void 0;
+      const monthlyGap = previous !== void 0 && Math.abs(daysBetween(previous.date, latest.date) - CADENCE_TARGET_DAYS.monthly) <= GAP_TOLERANCE_DAYS.monthly && Math.abs(latest.amount - previous.amount) <= Math.max(latest.amount, previous.amount) * SAME_PRICE_TOLERANCE;
+      if (txns.length === 1 ? !knownSubscription : !(monthlyGap || trial)) return [];
+      const amounts = txns.map((txn) => txn.amount);
+      const lead = trial ? `Started with ${formatMoney(first.amount)} on ${first.date}, then ${formatMoney(latest.amount)} on ${latest.date}: a trial that became a paid plan.` : monthlyGap ? `First charged ${formatMoney(first.amount)} on ${first.date}, then again a month later.` : `First charge from this subscription service: ${formatMoney(latest.amount)} on ${latest.date}.`;
+      return [
+        {
+          id: `new:${seriesKey}:${first.date}`,
+          merchantKey: group.merchantKey,
+          seriesKey,
+          merchant: displayMerchantName(latest.merchant),
+          status: "active",
+          kind: "subscription",
+          firstSeen: first.date,
+          lastSeen: latest.date,
+          expectedNextDate: addDays(latest.date, CADENCE_TARGET_DAYS.monthly),
+          ...monthlyGap || trial ? { cadence: "monthly" } : {},
+          occurrences: txns.length,
+          averageAmount: roundMoney(amounts.reduce((sum, amount) => sum + amount, 0) / amounts.length),
+          latestAmount: roundMoney(latest.amount),
+          monthlyEquivalent: roundMoney(latest.amount),
+          historicalTotal: roundMoney(amounts.reduce((sum, amount) => sum + amount, 0)),
+          confidence: monthlyGap || trial ? "medium" : "low",
+          evidence: [
+            lead,
+            `No earlier charges from this merchant in the ${priorHistory} days of history before it.`,
+            ...plans.length > 1 ? [`This merchant also charges a different amount, listed separately.`] : [],
+            `If it renews monthly, it costs about ${formatMoney(latest.amount * 12)} a year.`
+          ],
+          transactions: evidenceTransactions(txns),
+          ledgerQuery: {
+            merchant: group.merchantKey,
+            startDate: first.date,
+            endDate: latest.date
+          }
+        }
+      ];
+    });
   });
 }
 function comparableName(merchantKey) {
-  return merchantKey.toLowerCase().replace(/\.(?:com|net|org|app|io|co)\b/g, "").replace(/[^a-z0-9]/g, "");
+  return withoutPlanTier(merchantKey.toLowerCase()).replace(/\.(?:com|net|org|app|io|co)\b/g, "").replace(/[^a-z0-9]/g, "");
 }
 function findPossibleDuplicates(findings) {
   const buckets = /* @__PURE__ */ new Map();
