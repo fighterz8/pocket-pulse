@@ -1,0 +1,12 @@
+{
+  "name": "pocket-pulse",
+  "owner": { "name": "Pocket Pulse", "url": "https://pocket-pulse.com" },
+  "description": "Pocket Pulse for Claude Code.",
+  "plugins": [
+    {
+      "name": "pocket-pulse",
+      "source": "./plugin",
+      "description": "Finds subscriptions, cost increases, bills and spending habits in your bank and card transactions, from CSV exports or SimpleFIN. Runs on your computer."
+    }
+  ]
+}
