@@ -6,7 +6,7 @@
     {
       "name": "pocket-pulse",
       "source": "./plugin",
-      "description": "Finds subscriptions, cost increases, bills and spending habits in your bank and card transactions, from CSV exports or SimpleFIN. Runs on your computer."
+      "description": "Finds subscriptions, cost increases, bills and spending habits in your bank and card transactions, from CSV exports. Runs on your computer."
     }
   ]
 }

@@ -1,6 +1,6 @@
 ---
 description: Review the user's money with Pocket Pulse - subscriptions, cost increases, bills and spending habits found in their bank and card CSV exports. Use when the user asks about subscriptions, recurring charges, price increases, where their money goes, or wants a monthly money review.
-allowed-tools: mcp__plugin_pocket-pulse_pocket-pulse__leak_report mcp__plugin_pocket-pulse_pocket-pulse__list_recurring mcp__plugin_pocket-pulse_pocket-pulse__explain_finding mcp__plugin_pocket-pulse_pocket-pulse__import_csv mcp__plugin_pocket-pulse_pocket-pulse__categorize_merchant mcp__plugin_pocket-pulse_pocket-pulse__sync_simplefin mcp__plugin_pocket-pulse_pocket-pulse__cancel_help
+allowed-tools: mcp__plugin_pocket-pulse_pocket-pulse__leak_report mcp__plugin_pocket-pulse_pocket-pulse__list_recurring mcp__plugin_pocket-pulse_pocket-pulse__explain_finding mcp__plugin_pocket-pulse_pocket-pulse__import_csv mcp__plugin_pocket-pulse_pocket-pulse__categorize_merchant mcp__plugin_pocket-pulse_pocket-pulse__cancel_help
 ---
 
 # Money review
@@ -13,22 +13,20 @@ Walk the user through what they pay for every month, what got more expensive, an
 - Bills (housing, utilities, insurance, loans, medical) are never leaks. Report their total and any cost increase, and move on.
 - Save a decision with `set_decision` only when the user has made it. Never decide for them.
 - Never cancel a service, contact a merchant or move money. Use `cancel_help` to tell the user where to cancel. You may open that page with them, but they sign in and cancel themselves; never type a password or payment details.
-- Never ask for a SimpleFIN setup token or access URL in the conversation. The user saves it to a file and you pass the file's path.
 - Keep merchant names as the tools give them.
 
 ## 1. Privacy, the first time
 
 Before the first import, tell the user, in these words:
 
-> Pocket Pulse runs on your computer and keeps your transactions in a local folder. It goes online only to fetch your transactions from SimpleFIN, and only if you connect it. What it finds (merchants, amounts and dates) becomes part of this conversation with Claude, like anything else you share here.
+> Pocket Pulse runs on your computer, keeps your transactions in a local folder and never goes online. What it finds (merchants, amounts and dates) becomes part of this conversation with Claude, like anything else you share here.
 
 ## 2. Get the data
 
-Call `leak_report`. If it shows `simplefin` as connected, call `sync_simplefin` first; it fetches at most once a day. If there is no data yet, offer the ways in, recommending the first:
+Call `leak_report`. If there is no data yet, offer the ways in, recommending the first:
 
 1. **A free pocket-pulse.com account (recommended).** The user uploads their bank and card CSVs at pocket-pulse.com, reviews the categories there, then exports the ledger (Ledger, then Export CSV). That export keeps every category and correction they made on the site.
 2. **A bank or card CSV directly**, if they would rather not create an account.
-3. **SimpleFIN**, for automatic daily updates (about $15 a year).
 
 ### Pocket Pulse export or bank CSV
 
@@ -38,23 +36,9 @@ Call `leak_report`. If it shows `simplefin` as connected, call `sync_simplefin` 
 
 Import each file with `import_csv`. Tell the user what was imported: the dates covered, the number of transactions and any `warnings`, `overlap_warning` or `direction_guessed` it reports.
 
-### SimpleFIN
-
-SimpleFIN Bridge (simplefin.org, about $15 a year) connects to most US banks and card issuers, so new transactions arrive without exporting files.
-
-1. The user signs up for SimpleFIN Bridge, connects their bank there, and creates a setup token for Pocket Pulse.
-2. They save the token in a plain text file, such as `simplefin-token.txt` in their Downloads folder, and tell you where it is.
-3. Call `connect_simplefin` with that path.
-
-If the user pastes a token or access URL into the conversation anyway, do not use it. Tell them to disable it in SimpleFIN Bridge and create a new one for a file, because the conversation is not a safe place for it.
-
-After connecting, report the accounts and the `history_note`, any `simplefin_messages` (such as a bank login that needs attention) and `duplicate_accounts`, and pass on the `token_file_note` about deleting the file. SimpleFIN may hold only the last few months. For a longer history, the user can import a CSV export that ends before SimpleFIN's first date; overlapping dates would count purchases twice.
-
-If the user wants to stop, `disconnect_simplefin` deletes the stored access; they should also disable Pocket Pulse in SimpleFIN Bridge.
-
 ## 3. Categorize what the rules missed
 
-`import_csv` and the SimpleFIN tools list merchants under `needs_category`. For each one:
+`import_csv` lists merchants under `needs_category`. For each one:
 
 - If you recognise the merchant with confidence, call `categorize_merchant` with the category, and `recurring: true` for subscriptions.
 - Otherwise ask the user. Ask about all of them in one message, not one by one. Payments to a person (such as a Zelle or Venmo transfer) are always a question.

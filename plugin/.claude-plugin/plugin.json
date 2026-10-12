@@ -1,8 +1,8 @@
 {
   "name": "pocket-pulse",
   "displayName": "Pocket Pulse",
-  "version": "0.3.2",
-  "description": "Finds subscriptions, cost increases, bills and spending habits in your bank and card transactions, from CSV exports or SimpleFIN. Runs on your computer.",
+  "version": "0.4.0",
+  "description": "Finds subscriptions, cost increases, bills and spending habits in your bank and card transactions, from CSV exports. Runs on your computer.",
   "author": { "name": "Pocket Pulse", "url": "https://pocket-pulse.com" },
   "homepage": "https://pocket-pulse.com",
   "license": "MIT",

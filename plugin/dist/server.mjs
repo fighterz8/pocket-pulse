@@ -3258,8 +3258,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path4) {
-      let input = path4;
+    function removeDotSegments(path3) {
+      let input = path3;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3668,8 +3668,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path4 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path4 && path4 !== "/" ? path4 : void 0;
+        const path3 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path3 && path3 !== "/" ? path3 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -7673,8 +7673,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path4, errorMaps, issueData } = params;
-  const fullPath = [...path4, ...issueData.path || []];
+  const { data, path: path3, errorMaps, issueData } = params;
+  const fullPath = [...path3, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -7790,11 +7790,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path4, key) {
+  constructor(parent, value, path3, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path4;
+    this._path = path3;
     this._key = key;
   }
   get path() {
@@ -11432,10 +11432,10 @@ function assignProp(target, prop, value) {
     configurable: true
   });
 }
-function getElementAtPath(obj, path4) {
-  if (!path4)
+function getElementAtPath(obj, path3) {
+  if (!path3)
     return obj;
-  return path4.reduce((acc, key) => acc?.[key], obj);
+  return path3.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -11755,11 +11755,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path4, issues) {
+function prefixIssues(path3, issues) {
   return issues.map((iss) => {
     var _a;
     (_a = iss).path ?? (_a.path = []);
-    iss.path.unshift(path4);
+    iss.path.unshift(path3);
     return iss;
   });
 }
@@ -15172,11 +15172,11 @@ function normalizeObjectSchema(schema) {
   }
   return void 0;
 }
-function getDotPath(path4) {
-  if (path4.length === 0) {
+function getDotPath(path3) {
+  if (path3.length === 0) {
     return "object root";
   }
-  return path4.reduce((acc, seg, index) => {
+  return path3.reduce((acc, seg, index) => {
     if (index === 0) {
       return String(seg);
     }
@@ -21854,10 +21854,9 @@ import path from "node:path";
 var EMPTY = {
   transactions: [],
   rules: {},
-  decisions: {},
-  simplefin: null,
-  "simplefin-sync": { requests: [] }
+  decisions: {}
 };
+var RETIRED_FILES = ["simplefin.json", "simplefin-sync.json"];
 function defaultDataDir(env = process.env) {
   return env.POCKET_PULSE_DATA || env.CLAUDE_PLUGIN_DATA || path.join(homedir(), ".pocketpulse");
 }
@@ -21866,6 +21865,7 @@ var LocalStore = class {
     this.dir = dir;
     mkdirSync(dir, { recursive: true, mode: 448 });
     chmodSync(dir, 448);
+    for (const file of RETIRED_FILES) rmSync(path.join(dir, file), { force: true });
   }
   read(name) {
     try {
@@ -21903,25 +21903,6 @@ var LocalStore = class {
     else delete decisions[seriesKey2];
     this.write("decisions", decisions);
   }
-  simplefin() {
-    return this.read("simplefin");
-  }
-  /** Saves the connection, or deletes it along with the sync state. */
-  saveSimplefin(connection) {
-    if (connection) {
-      this.write("simplefin", connection);
-      return;
-    }
-    for (const name of ["simplefin", "simplefin-sync"]) {
-      rmSync(path.join(this.dir, `${name}.json`), { force: true });
-    }
-  }
-  simplefinSync() {
-    return this.read("simplefin-sync");
-  }
-  saveSimplefinSync(state) {
-    this.write("simplefin-sync", state);
-  }
 };
 function transactionKeys(rows) {
   const seen = /* @__PURE__ */ new Map();
@@ -21931,135 +21912,6 @@ function transactionKeys(rows) {
     seen.set(base, occurrence);
     return createHash("sha256").update(`${base}#${occurrence}`).digest("hex").slice(0, 24);
   });
-}
-
-// plugin/src/simplefinTools.ts
-import { createHash as createHash2 } from "node:crypto";
-import { readFile as readFile2, stat as stat2 } from "node:fs/promises";
-import path3 from "node:path";
-import * as engine3 from "./engine.mjs";
-
-// plugin/src/simplefin.ts
-var SimplefinError = class extends Error {
-};
-function parseSimplefinInput(text) {
-  const value = text.trim();
-  if (/^https?:\/\//i.test(value)) return { kind: "access", accessUrl: checkAccessUrl(value) };
-  const decoded = Buffer.from(value.replace(/\s+/g, ""), "base64").toString("utf8").trim();
-  let url;
-  try {
-    url = new URL(decoded);
-  } catch {
-    throw new SimplefinError(
-      "The file does not hold a SimpleFIN setup token or access URL. Copy the setup token from SimpleFIN Bridge again."
-    );
-  }
-  if (url.protocol !== "https:") throw new SimplefinError("The setup token's claim address is not HTTPS.");
-  return { kind: "setup", claimUrl: url.toString() };
-}
-function checkAccessUrl(value) {
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new SimplefinError("The access URL is not a valid address.");
-  }
-  if (url.protocol !== "https:") throw new SimplefinError("The access URL is not HTTPS.");
-  if (!url.username || !url.password) {
-    throw new SimplefinError("The access URL has no credentials in it. Use the full URL SimpleFIN gave you.");
-  }
-  return url.toString().replace(/\/+$/, "");
-}
-async function claimAccessUrl(claimUrl, fetchImpl = fetch) {
-  const response = await fetchImpl(claimUrl, { method: "POST", redirect: "manual" });
-  if (response.status === 403) {
-    throw new SimplefinError(
-      "SimpleFIN refused this setup token: it was already claimed or does not exist. If you did not claim it yourself, disable it in SimpleFIN Bridge and create a new one."
-    );
-  }
-  if (!response.ok) throw new SimplefinError(`SimpleFIN could not claim the token (HTTP ${response.status}).`);
-  try {
-    return checkAccessUrl((await response.text()).trim());
-  } catch {
-    throw new SimplefinError(
-      "SimpleFIN did not return access for this token. It may have been claimed already; create a new setup token."
-    );
-  }
-}
-function sanitize(text, max = 200) {
-  return String(text ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\d{5,}/g, (digits) => `\u2026${digits.slice(-4)}`).replace(/\s+/g, " ").trim().slice(0, max);
-}
-var isoDate = (seconds) => new Date(seconds * 1e3).toISOString().slice(0, 10);
-async function fetchAccounts(accessUrl, window, fetchImpl = fetch) {
-  const url = new URL(checkAccessUrl(accessUrl));
-  const auth = Buffer.from(
-    `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`
-  ).toString("base64");
-  url.username = "";
-  url.password = "";
-  url.pathname = `${url.pathname.replace(/\/+$/, "")}/accounts`;
-  url.search = new URLSearchParams({
-    "start-date": String(Date.parse(`${window.start}T00:00:00Z`) / 1e3),
-    "end-date": String(Date.parse(`${window.end}T00:00:00Z`) / 1e3)
-  }).toString();
-  const response = await fetchImpl(url, {
-    headers: { Authorization: `Basic ${auth}` },
-    redirect: "manual"
-  });
-  if (response.status === 403) {
-    throw new SimplefinError(
-      "SimpleFIN refused the stored access. It may have been disabled in SimpleFIN Bridge; connect again with a new setup token."
-    );
-  }
-  if (response.status === 402) throw new SimplefinError("SimpleFIN says the subscription needs payment.");
-  if (!response.ok) throw new SimplefinError(`SimpleFIN returned HTTP ${response.status}.`);
-  let body;
-  try {
-    body = await response.json();
-  } catch {
-    throw new SimplefinError("SimpleFIN sent a response that is not JSON.");
-  }
-  return readAccountSet(body);
-}
-function readAccountSet(body) {
-  const orgByConnection = new Map(
-    (body.connections ?? []).map((c) => [String(c.conn_id), String(c.org_name ?? c.name ?? "")])
-  );
-  const errors = [
-    ...(body.errlist ?? []).map((error2) => sanitize(error2.msg)),
-    ...(body.errors ?? []).map((error2) => sanitize(error2))
-  ].filter(Boolean);
-  const byIdentity = /* @__PURE__ */ new Map();
-  const duplicates = /* @__PURE__ */ new Set();
-  for (const raw of body.accounts ?? []) {
-    const org = String(raw.org?.name ?? raw.org?.domain ?? orgByConnection.get(String(raw.conn_id)) ?? "").trim();
-    const name = String(raw.name ?? raw.id ?? "Account").trim();
-    const account = {
-      label: sanitize([org, name].filter(Boolean).join(" "), 100),
-      identity: `${org}|${name}`.toLowerCase(),
-      transactions: (raw.transactions ?? []).flatMap((txn) => {
-        const when = Number(txn.transacted_at) || Number(txn.posted);
-        const amount = Number(txn.amount);
-        if (txn.pending === true || !Number(txn.posted) || !when || !Number.isFinite(amount)) return [];
-        return [
-          {
-            id: String(txn.id ?? ""),
-            date: isoDate(when),
-            amount,
-            description: String(txn.description ?? "").trim(),
-            payee: String(txn.payee ?? "").trim()
-          }
-        ];
-      })
-    };
-    const seen = byIdentity.get(account.identity);
-    if (seen) {
-      duplicates.add(account.label);
-      if (seen.transactions.length >= account.transactions.length) continue;
-    }
-    byIdentity.set(account.identity, account);
-  }
-  return { accounts: [...byIdentity.values()], errors, duplicateAccounts: [...duplicates] };
 }
 
 // plugin/src/tools.ts
@@ -22124,7 +21976,7 @@ function coverageOf(report) {
     limitations: coverage.limitations
   };
 }
-function leakReportView(report, input, extra = {}) {
+function leakReportView(report, input) {
   const wanted = input.section ? Object.entries(REPORT_SECTIONS).filter(([name]) => name === input.section) : Object.entries(REPORT_SECTIONS);
   if (wanted.length === 0) {
     throw new AgentToolError(`Unknown section. Use one of: ${Object.keys(REPORT_SECTIONS).join(", ")}.`);
@@ -22142,7 +21994,6 @@ function leakReportView(report, input, extra = {}) {
   }
   return {
     coverage: coverageOf(report),
-    ...extra,
     summary: {
       subscriptions: report.summary.activeCount,
       subscriptions_monthly: report.summary.estimatedActiveMonthly,
@@ -22387,6 +22238,7 @@ function addTransactions(store, candidates, keys) {
 var SOURCE_NAMES = {
   csv: "a bank CSV",
   "pocket-pulse-export": "a Pocket Pulse export",
+  // Imported by plugin versions before 0.4.0, which could connect SimpleFIN.
   simplefin: "SimpleFIN"
 };
 function overlapWithOtherSource(existing, added) {
@@ -22449,16 +22301,10 @@ var NO_DATA = {
   empty: true,
   message: "No transactions yet. Import a bank or card CSV, or a Pocket Pulse ledger export, with import_csv."
 };
-function simplefinStatus(store) {
-  const connection = store.simplefin();
-  if (!connection) return {};
-  const lastSyncedAt = store.simplefinSync().lastSyncedAt ?? null;
-  return { simplefin: { connected: true, last_synced_at: lastSyncedAt } };
-}
 function leakReport(store, input) {
   const report = buildReport(store, input.as_of);
   if (!report) return NO_DATA;
-  return leakReportView(report, input, simplefinStatus(store));
+  return leakReportView(report, input);
 }
 function listRecurring(store, input) {
   const report = buildReport(store, input.as_of);
@@ -22532,199 +22378,11 @@ function categorizeMerchant(store, input) {
   };
 }
 
-// plugin/src/simplefinTools.ts
-var WINDOW_DAYS = 90;
-var FIRST_SYNC_DAYS = 365;
-var OVERLAP_DAYS = 10;
-var MAX_REQUESTS_PER_DAY = 20;
-var addDays = (date3, days) => new Date(Date.parse(`${date3}T00:00:00Z`) + days * 864e5).toISOString().slice(0, 10);
-var localDate = (now) => `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-function asToolError(error2) {
-  if (error2 instanceof SimplefinError) throw new AgentToolError(error2.message);
-  if (error2 instanceof TypeError && /fetch failed/i.test(error2.message)) {
-    throw new AgentToolError("Could not reach SimpleFIN. Check the internet connection and try again.");
-  }
-  throw error2;
-}
-async function connectSimplefin(store, input, deps = {}) {
-  const file = path3.resolve(input.token_file);
-  const info = await stat2(file).catch(() => {
-    throw new AgentToolError(`No file at ${file}.`);
-  });
-  if (!info.isFile() || info.size > 4096) {
-    throw new AgentToolError(`${file} should be a small text file holding only the SimpleFIN setup token.`);
-  }
-  let accessUrl;
-  let fromSetupToken;
-  try {
-    const saved = parseSimplefinInput(await readFile2(file, "utf8"));
-    fromSetupToken = saved.kind === "setup";
-    accessUrl = saved.kind === "setup" ? await claimAccessUrl(saved.claimUrl, deps.fetch) : saved.accessUrl;
-  } catch (error2) {
-    asToolError(error2);
-  }
-  const now = (deps.now ?? (() => /* @__PURE__ */ new Date()))();
-  store.saveSimplefin({ accessUrl, connectedAt: now.toISOString() });
-  store.saveSimplefinSync({ requests: store.simplefinSync().requests });
-  const tokenFileNote = fromSetupToken ? `The setup token in ${file} is used up now. Delete the file.` : `${file} holds a working SimpleFIN access URL. Delete it now that Pocket Pulse has stored it.`;
-  try {
-    return { connected: true, ...await syncSimplefin(store, deps), token_file_note: tokenFileNote };
-  } catch (error2) {
-    if (!(error2 instanceof AgentToolError)) throw error2;
-    return { connected: true, synced: false, sync_error: error2.message, token_file_note: tokenFileNote };
-  }
-}
-async function syncSimplefin(store, deps = {}) {
-  const connection = store.simplefin();
-  if (!connection) {
-    throw new AgentToolError("SimpleFIN is not connected. Connect it with connect_simplefin first.");
-  }
-  const now = (deps.now ?? (() => /* @__PURE__ */ new Date()))();
-  const today = localDate(now);
-  const state = store.simplefinSync();
-  if (state.lastSyncedOn === today) {
-    return {
-      synced: false,
-      last_synced_at: state.lastSyncedAt,
-      note: "Already synced today. SimpleFIN refreshes bank data about once a day, so Pocket Pulse syncs at most once a day."
-    };
-  }
-  const dayAgo = now.getTime() - 864e5;
-  const requests = state.requests.filter((time3) => Date.parse(time3) > dayAgo);
-  const end = addDays(today, 1);
-  const start = state.through ? addDays(state.through, -OVERLAP_DAYS) : addDays(end, -FIRST_SYNC_DAYS);
-  const accounts = /* @__PURE__ */ new Map();
-  const errors = /* @__PURE__ */ new Set();
-  const duplicateAccounts = /* @__PURE__ */ new Set();
-  try {
-    for (let windowEnd = end; windowEnd > start; windowEnd = addDays(windowEnd, -WINDOW_DAYS)) {
-      if (requests.length >= MAX_REQUESTS_PER_DAY) {
-        throw new AgentToolError("Pocket Pulse has made its daily allowance of SimpleFIN requests. Try again tomorrow.");
-      }
-      const windowStart = [addDays(windowEnd, -WINDOW_DAYS), start].sort().at(-1);
-      requests.push(now.toISOString());
-      const set = await fetchAccounts(connection.accessUrl, { start: windowStart, end: windowEnd }, deps.fetch);
-      set.errors.forEach((error2) => errors.add(error2));
-      set.duplicateAccounts.forEach((label) => duplicateAccounts.add(label));
-      let found = 0;
-      for (const account of set.accounts) {
-        const seen = accounts.get(account.identity);
-        if (seen) seen.transactions.push(...account.transactions);
-        else accounts.set(account.identity, { ...account, transactions: [...account.transactions] });
-        found += account.transactions.length;
-      }
-      if (found === 0 && !state.through && windowEnd !== end) break;
-    }
-  } catch (error2) {
-    store.saveSimplefinSync({ ...state, requests });
-    asToolError(error2);
-  }
-  const { candidates, keys } = await toCandidates([...accounts.values()], store);
-  const { added, overlap } = addTransactions(store, candidates, keys);
-  store.saveSimplefinSync({
-    lastSyncedOn: today,
-    lastSyncedAt: now.toISOString(),
-    through: today,
-    requests
-  });
-  const dates = candidates.map((row) => row.date).sort();
-  return {
-    synced: true,
-    accounts: [...accounts.values()].map((account) => ({
-      account: account.label,
-      transactions: account.transactions.length
-    })),
-    imported: added.length,
-    already_imported: candidates.length - added.length,
-    dates: { first: dates[0] ?? null, last: dates[dates.length - 1] ?? null },
-    ...!state.through && {
-      history_note: dates[0] ? `SimpleFIN had history back to ${dates[0]}. Pocket Pulse keeps every sync, so history grows from here.` : "SimpleFIN returned no transactions yet. Banks can take a day to appear after connecting."
-    },
-    ...errors.size > 0 && { simplefin_messages: [...errors] },
-    ...duplicateAccounts.size > 0 && {
-      duplicate_accounts: {
-        accounts: [...duplicateAccounts],
-        note: "SimpleFIN listed these accounts more than once; only one copy of each was imported."
-      }
-    },
-    ...overlap && { overlap_warning: overlap },
-    needs_category: merchantsNeedingCategory(store.transactions()),
-    total_transactions: store.transactions().length
-  };
-}
-async function toCandidates(accounts, store) {
-  const rows = accounts.flatMap(
-    (account) => (
-      // Overlapping windows return a transaction twice.
-      [...new Map(account.transactions.map((txn) => [txn.id || `${txn.date}|${txn.amount}|${txn.description}`, txn])).values()].map((txn) => ({ account, txn }))
-    )
-  );
-  const rules = store.rules();
-  const byDescription = await engine3.classifyRows(
-    rows.map(({ txn }) => ({ rawDescription: txn.description || txn.payee, amount: txn.amount })),
-    { rules }
-  );
-  const byPayee = await engine3.classifyRows(
-    rows.map(({ txn }) => ({ rawDescription: txn.payee || txn.description, amount: txn.amount })),
-    { rules }
-  );
-  const candidates = rows.map(({ account, txn }, index) => {
-    const fromDescription = byDescription[index];
-    const fromPayee = byPayee[index];
-    const out = choose(txn, fromDescription, fromPayee);
-    return {
-      date: txn.date,
-      amount: out.amount,
-      merchant: out.merchant,
-      rawDescription: txn.description,
-      ...txn.payee && { payee: txn.payee },
-      account: account.label,
-      flowType: out.flowType,
-      transactionClass: out.transactionClass,
-      category: out.category,
-      recurrenceType: out.recurrenceType,
-      labelSource: out.labelSource,
-      needsCategory: out.needsAi && out.category === "other",
-      excluded: false,
-      source: "simplefin"
-    };
-  });
-  const keys = rows.map(
-    ({ account, txn }) => createHash2("sha256").update(`simplefin|${account.identity}|${txn.id || `${txn.date}|${txn.amount}|${txn.description}`}`).digest("hex").slice(0, 24)
-  );
-  return { candidates, keys };
-}
-function choose(txn, fromDescription, fromPayee) {
-  if (!txn.payee) return fromDescription;
-  if (fromPayee.labelSource === "user-rule") return fromPayee;
-  if (fromDescription.labelSource === "user-rule" || fromDescription.transactionClass !== "expense") {
-    return fromDescription;
-  }
-  const usePayeeCategory = fromPayee.category !== "other" || fromDescription.category === "other";
-  return {
-    ...fromDescription,
-    merchant: fromPayee.merchant,
-    ...usePayeeCategory && {
-      category: fromPayee.category,
-      labelSource: fromPayee.labelSource,
-      needsAi: fromPayee.needsAi
-    }
-  };
-}
-function disconnectSimplefin(store) {
-  const connected = store.simplefin() !== null;
-  store.saveSimplefin(null);
-  return {
-    disconnected: connected,
-    note: connected ? "The stored SimpleFIN access is deleted; imported transactions are kept. To revoke access fully, also disable Pocket Pulse in SimpleFIN Bridge." : "SimpleFIN was not connected."
-  };
-}
-
 // plugin/src/server.ts
-var VERSION = "0.3.2";
-var INSTRUCTIONS = `Pocket Pulse finds subscriptions, bills, cost increases and spending habits in the user's bank and card transactions. It runs on the user's computer and keeps its data in a local folder. Its only network calls go to SimpleFIN, and only after the user connects it.
+var VERSION = "0.4.0";
+var INSTRUCTIONS = `Pocket Pulse finds subscriptions, bills, cost increases and spending habits in the user's bank and card transactions. It runs on the user's computer, keeps its data in a local folder and never goes online.
 
-Start with leak_report. If SimpleFIN is connected, call sync_simplefin first. If there is no data, recommend the ledger export from a free pocket-pulse.com account (Ledger, then Export CSV), which keeps the user's categories and corrections; a bank or card CSV export or a SimpleFIN connection also work. Import files with import_csv. Never ask the user to paste a SimpleFIN token or access URL into the conversation: they save it to a file and you pass the file's path. Every amount and date comes from these tools: never estimate or invent figures. Money out is negative.`;
+Start with leak_report. If there is no data, recommend the ledger export from a free pocket-pulse.com account (Ledger, then Export CSV), which keeps the user's categories and corrections; a bank or card CSV export also works. Import files with import_csv. Every amount and date comes from these tools: never estimate or invent figures. Money out is negative.`;
 var asOf = external_exports.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("Report as of this date (YYYY-MM-DD). Defaults to the latest imported transaction.");
 var seriesKey = external_exports.string().min(1).max(300).describe("A series_key from leak_report or list_recurring.");
 async function respond(run) {
@@ -22836,38 +22494,6 @@ function createServer(store) {
       annotations: { ...local, readOnlyHint: true }
     },
     (input) => respond(() => cancelHelp2(store, input))
-  );
-  server.registerTool(
-    "connect_simplefin",
-    {
-      title: "Connect SimpleFIN",
-      description: "Connect the user's bank accounts through SimpleFIN Bridge (simplefin.org, about $15 a year) and import their transactions. The user creates a setup token in SimpleFIN Bridge and saves it in a text file; pass that file's path. Never ask for the token in the conversation. The token is exchanged for access that is stored in the local data folder and never shown.",
-      inputSchema: {
-        token_file: external_exports.string().min(1).describe("Path to a text file holding only the SimpleFIN setup token (or an access URL claimed earlier).")
-      },
-      annotations: { openWorldHint: true, readOnlyHint: false, destructiveHint: false, idempotentHint: false }
-    },
-    (input) => respond(() => connectSimplefin(store, input))
-  );
-  server.registerTool(
-    "sync_simplefin",
-    {
-      title: "Sync SimpleFIN",
-      description: "Fetch new transactions from SimpleFIN, at most once a day. Returns what was added and the merchants that still need a category.",
-      inputSchema: {},
-      annotations: { openWorldHint: true, readOnlyHint: false, destructiveHint: false, idempotentHint: true }
-    },
-    () => respond(() => syncSimplefin(store))
-  );
-  server.registerTool(
-    "disconnect_simplefin",
-    {
-      title: "Disconnect SimpleFIN",
-      description: "Delete the stored SimpleFIN access. Imported transactions are kept. Only when the user asks.",
-      inputSchema: {},
-      annotations: { ...local, readOnlyHint: false, destructiveHint: true, idempotentHint: true }
-    },
-    () => respond(() => disconnectSimplefin(store))
   );
   return server;
 }
